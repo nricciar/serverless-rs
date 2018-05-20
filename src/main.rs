@@ -27,6 +27,8 @@ mod schema;
 
 use db::{GetLambda, CreateLambda, DbExecutor};
 
+use std::env;
+
 struct AppState {
     db: Addr<Syn, DbExecutor>,
 }
@@ -104,26 +106,41 @@ fn exec_lambda(_name: Path<LambdaPath>, req: HttpRequest<AppState>) -> FutureRes
                 // Compile the source code.  `unwrap()` panics if the code is invalid,
                 // e.g. if there is a syntax  error.
                 let script = v8::Script::compile(&isolate, &context, &source).unwrap();
-                let _result = script.run(&context).unwrap();
+                match script.run(&context) {
+                    Ok(_) => {
+                        let global = context.global();
+                        // helper functions
+                        let test = v8::value::Function::new(&isolate, &context, 0, Box::new(hello));
+                        global.set(&context, &v8::value::String::from_str(&isolate, "hello"), &test);
 
-                let global = context.global();
-                // helper functions
-                let test = v8::value::Function::new(&isolate, &context, 0, Box::new(hello));
-                global.set(&context, &v8::value::String::from_str(&isolate, "hello"), &test);
+                        // request object
+                        let request = request_to_js_obj(&req, &isolate, &context);
 
-                // request object
-                let request = request_to_js_obj(&req, &isolate, &context);
-
-                // endpoint    
-                let value = global.get(&context, &v8::value::String::from_str(&isolate, "handler"));
-                let fun = value.into_function().unwrap();
-                let res = fun.call(&context, &[&request]).unwrap();
-
-                // Convert the result to a value::String.
-                let result_str = res.to_string(&context);
-                Ok(HttpResponse::Ok().body(result_str.value()))
+                        // endpoint    
+                        let value = global.get(&context, &v8::value::String::from_str(&isolate, "handler"));
+                        let fun = value.into_function().unwrap();
+                        match fun.call(&context, &[&request]) {
+                            Ok(res) => {
+                                // Convert the result to a value::String.
+                                let result_str = res.to_string(&context);
+                                Ok(HttpResponse::Ok().body(result_str.value()))
+                            },
+                            Err(e) => {
+                                println!("ERR! {:?}", e);
+                                Ok(HttpResponse::InternalServerError().body("Internal Error"))
+                            },
+                        }
+                    },
+                    Err(e) => {
+                        println!("ERR! {:?}", e);
+                        Ok(HttpResponse::InternalServerError().body("Internal Error"))
+                    },
+                }
             },
-            Err(_) => Ok(HttpResponse::InternalServerError().into()),
+            Err(e) => {
+                println!("ERR! {:?}", e);
+                Ok(HttpResponse::from_error(e))
+            },
         })
         .responder()
 }
@@ -133,7 +150,18 @@ fn main() {
     env_logger::init();
     let sys = actix::System::new("serverless");
 
-    let manager = ConnectionManager::<PgConnection>::new("postgres://postgres:@localhost/serverless");
+    let database_url =
+        match env::var("DATABASE_URL") {
+            Ok(v) => v,
+            Err(_) => "postgres://postgres:@localhost/serverless".to_string(),
+        };
+    let listen_addr =
+        match env::var("LISTEN_ADDR") {
+            Ok(v) => v,
+            Err(_) => "127.0.0.1:8088".to_string(),
+        };
+
+    let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = r2d2::Pool::builder()
         .build(manager)
         .expect("Failed to create pool.");
@@ -145,7 +173,7 @@ fn main() {
             .middleware(Logger::default())
             .resource("/v1/lambda/{path}", |r| r.method(http::Method::POST).with2(create_lambda))
             .resource("/{path}", |r| r.route().with2(exec_lambda)))
-        .bind("127.0.0.1:8088")
+        .bind(listen_addr)
         .unwrap()
         .start();
 

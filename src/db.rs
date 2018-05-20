@@ -4,7 +4,6 @@ use diesel;
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
-use diesel::pg::upsert::*;
 
 use models;
 use schema;
@@ -74,6 +73,9 @@ impl Handler<GetLambda> for DbExecutor {
             .load::<models::Lambda>(conn)
             .map_err(|_| error::ErrorInternalServerError("Error loading lambda"))?;
 
-        Ok(items.pop().unwrap())
+        match items.pop() {
+            Some(i) => Ok(i),
+            None => Err(error::ErrorNotFound("Not Found")),
+        }
     }
 }
