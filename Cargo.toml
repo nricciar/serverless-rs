@@ -1,0 +1,16 @@
+[package]
+name = "serverless"
+version = "0.1.0"
+authors = ["David Ricciardi <nricciar@gmail.com>"]
+
+[dependencies]
+actix = "0.5"
+actix-web = "0.6"
+env_logger = "0.5.10"
+diesel = { version = "^1.2.2", features = ["sqlite", "r2d2", "postgres"] }
+r2d2 = "0.8.2"
+futures = "0.1"
+serde = "1.0"
+serde_json = "1.0"
+serde_derive = "1.0"
+v8 = "0.9.6"
