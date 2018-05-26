@@ -23,6 +23,32 @@ fn count_headers(context: &v8::context::Context, isolate: &v8::isolate::Isolate,
     count
 }
 
+pub fn find_header_by_key(context: &v8::context::Context, isolate: &v8::isolate::Isolate, arr: &v8::value::Array, key: String) -> Option<Header> {
+    let mut count = 0;
+    let mut result = None;
+    while {
+        let item = arr.get(&context, &v8::value::Integer::new(&isolate, count));
+        if item.is_array() { 
+            count += 1;
+            match item.into_array() {
+                Some(head) => {
+                    match js_array_to_header(&context, &isolate, &head) {
+                        Ok(test) => {
+                            if test.key.to_lowercase() == key.to_lowercase() { result = Some(test) }
+                            true
+                        },
+                        _ => false
+                    }
+                },
+                _ => false
+            }
+        } else {
+            false
+        }
+    } {}
+    result
+}
+
 fn get_header_list(context: &v8::context::Context, isolate: &v8::isolate::Isolate, arr: &v8::value::Array) -> Vec<Header> {
     let mut vec = Vec::new();
     let mut count = 0;

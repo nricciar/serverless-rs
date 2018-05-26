@@ -7,6 +7,45 @@ pub fn hello(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Value, 
     Ok(v8::value::Value::from(test))
 }
 
+pub fn get_header(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Value, v8::value::Value> {
+    match info.args.as_slice() {
+        [key] => {
+            match key.clone().into_string() {
+                Some(k) => {
+                    let context = v8::Context::new(&info.isolate);
+                    let request_obj = info.this.clone();
+                    match request_obj.get(&context, &v8::value::String::from_str(&info.isolate, "headers")).into_array() {
+                        Some(list) => {
+                            match response::find_header_by_key(&context, &info.isolate, &list, k.value()) {
+                                Some(ret) => {
+                                    let msg = v8::value::String::from_str(&info.isolate, ret.value.as_str());
+                                    Ok(v8::value::Value::from(msg))
+                                },
+                                _ => {
+                                    let msg = v8::value::String::from_str(&info.isolate, "");
+                                    Ok(v8::value::Value::from(msg))
+                                }
+                            }
+                        },
+                        _ => {
+                            let msg = v8::value::String::from_str(&info.isolate, "");
+                            Ok(v8::value::Value::from(msg))
+                        }
+                    }
+                },
+                _ => {
+                    let err = v8::value::String::from_str(&info.isolate, "Invalid Request!");
+                    Err(v8::value::Value::from(err))                     
+                }
+            }
+        },
+        _ => {
+            let err = v8::value::String::from_str(&info.isolate, "Invalid Request!");
+            Err(v8::value::Value::from(err)) 
+        }
+    }
+}
+
 pub fn add_header(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Value, v8::value::Value> {
     match info.args.as_slice() {
         [key, value] => {

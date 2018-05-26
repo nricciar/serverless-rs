@@ -93,10 +93,15 @@ fn exec_lambda(name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> F
                         let test = v8::value::Function::new(&isolate, &context, 0, Box::new(functions::hello));
                         global.set(&context, &v8::value::String::from_str(&isolate, "hello"), &test);
 
-                        // default response values
-                        let test = v8::value::Function::new(&isolate, &context, 2, Box::new(functions::add_header));
-                        js_response.set(&context, &v8::value::String::from_str(&isolate, "addHeader"), &test);
+                        // response helper functions
+                        let add_header = v8::value::Function::new(&isolate, &context, 2, Box::new(functions::add_header));
+                        js_response.set(&context, &v8::value::String::from_str(&isolate, "addHeader"), &add_header);
+                        // set default response values
                         global.set(&context, &v8::value::String::from_str(&isolate, "response"), &js_response);
+
+                        // request helper functions
+                        let get_header = v8::value::Function::new(&isolate, &context, 1, Box::new(functions::get_header));
+                        js_request.set(&context, &v8::value::String::from_str(&isolate, "getHeader"), &get_header);
 
                         // endpoint    
                         let value = global.get(&context, &v8::value::String::from_str(&isolate, "handler"));
