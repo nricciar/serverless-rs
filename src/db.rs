@@ -4,11 +4,17 @@ use diesel;
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
+use actix::prelude::{Addr,Syn};
 
 use models;
 use schema;
+use request;
 
 pub struct DbExecutor(pub Pool<ConnectionManager<PgConnection>>);
+
+pub struct AppState {
+    pub db: Addr<Syn, DbExecutor>,
+}
 
 pub struct CreateLambda {
     pub path: String,
@@ -17,8 +23,7 @@ pub struct CreateLambda {
 }
 
 pub struct GetLambda {
-    pub path: String,
-    pub hostname: String,
+    pub request: request::Request,
 }
 
 impl Message for CreateLambda {
@@ -68,8 +73,8 @@ impl Handler<GetLambda> for DbExecutor {
         let conn: &PgConnection = &self.0.get().unwrap();
 
         let mut items = lambdas
-            .filter(path.eq(msg.path))
-            .filter(hostname.eq(msg.hostname))
+            .filter(path.eq(msg.request.path))
+            .filter(hostname.eq(msg.request.host))
             .load::<models::Lambda>(conn)
             .map_err(|_| error::ErrorInternalServerError("Error loading lambda"))?;
 

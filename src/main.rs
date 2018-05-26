@@ -12,9 +12,10 @@ extern crate futures;
 extern crate r2d2;
 extern crate v8;
 
-use actix::prelude::{Addr,Syn,SyncArbiter};
+use actix::prelude::{SyncArbiter};
 use actix_web::{http, server, Path, App, AsyncResponder, FutureResponse,
                 HttpResponse, HttpRequest};
+use http::{StatusCode};
 use actix_web::middleware::Logger;
 use diesel::pg::PgConnection;
 use diesel::r2d2::ConnectionManager;
@@ -24,53 +25,32 @@ use actix_web::HttpMessage;
 mod db;
 mod models;
 mod schema;
+mod functions;
+mod request;
+mod response;
 
-use db::{GetLambda, CreateLambda, DbExecutor};
+use db::{GetLambda, CreateLambda, DbExecutor, AppState};
+use request::{Request};
+use response::{Response};
 
 use std::env;
-
-struct AppState {
-    db: Addr<Syn, DbExecutor>,
-}
-
-#[derive(Deserialize)]
-struct LambdaPath {
-    path: String,
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct CreateRequest {
     javascript: String,
 }
 
-fn hello(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Value, v8::value::Value> {
-    let test = v8::value::String::from_str(&info.isolate, "World!");
-    Ok(v8::value::Value::from(test))
-}
-
-fn request_to_js_obj(req: &HttpRequest<AppState>, isolate: &v8::isolate::Isolate, context: &v8::context::Context) -> v8::value::Object {
-    let hostname = req.headers().get("host").unwrap().to_str().unwrap();
-    let path = req.uri().path();
-    let request = v8::value::Object::new(&isolate, &context);
-    request.set(&context, &v8::value::String::from_str(&isolate, "hostname"),
-        &v8::value::String::from_str(&isolate, hostname));
-    request.set(&context, &v8::value::String::from_str(&isolate, "path"),
-        &v8::value::String::from_str(&isolate, path));
-    request
-}
-
-fn create_lambda(name: Path<LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
+fn create_lambda(name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
     req.clone().json()
         .from_err()
         .and_then(move |val: CreateRequest| {
-            let hostname = req.headers().get("host").unwrap().to_str().unwrap();
-            let path = format!("/{}", name.path);
+            let request = Request::map(&name, &req); 
             req.clone()
                 .state()
                 .db
                 .send(CreateLambda {
-                    path: path,
-                    hostname: hostname.to_string(),
+                    path: request.path,
+                    hostname: request.host,
                     code: val.javascript,
                 })
                 .from_err()
@@ -82,23 +62,23 @@ fn create_lambda(name: Path<LambdaPath>, req: HttpRequest<AppState>) -> FutureRe
         .responder()
 }
 
-fn exec_lambda(_name: Path<LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
-    let tmp = req.clone();
-    let hostname = tmp.headers().get("host").unwrap().to_str().unwrap();
-    let path = tmp.uri().path();
-
+fn exec_lambda(name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
     req.clone()
         .state()
         .db
         .send(GetLambda {
-            path: path.to_string(),
-            hostname: hostname.to_string(),
+            request: Request::map(&name, &req),
         })
         .from_err()
         .and_then(move |res| match res {
             Ok(lambda) => {
                 let isolate = v8::Isolate::new();
                 let context = v8::Context::new(&isolate);
+
+                // request object passed to handler
+                let js_request = Request::map(&name, &req).js(&isolate, &context);
+                // initial response object
+                let js_response = Response::new().js(&isolate, &context);
 
                 // Load the source code that we want to evaluate
                 let source = v8::value::String::from_str(&isolate, &lambda.code);
@@ -110,20 +90,30 @@ fn exec_lambda(_name: Path<LambdaPath>, req: HttpRequest<AppState>) -> FutureRes
                     Ok(_) => {
                         let global = context.global();
                         // helper functions
-                        let test = v8::value::Function::new(&isolate, &context, 0, Box::new(hello));
+                        let test = v8::value::Function::new(&isolate, &context, 0, Box::new(functions::hello));
                         global.set(&context, &v8::value::String::from_str(&isolate, "hello"), &test);
 
-                        // request object
-                        let request = request_to_js_obj(&req, &isolate, &context);
+                        // default response values
+                        let test = v8::value::Function::new(&isolate, &context, 2, Box::new(functions::add_header));
+                        js_response.set(&context, &v8::value::String::from_str(&isolate, "addHeader"), &test);
+                        global.set(&context, &v8::value::String::from_str(&isolate, "response"), &js_response);
 
                         // endpoint    
                         let value = global.get(&context, &v8::value::String::from_str(&isolate, "handler"));
                         let fun = value.into_function().unwrap();
-                        match fun.call(&context, &[&request]) {
+                        match fun.call(&context, &[&js_request]) {
                             Ok(res) => {
                                 // Convert the result to a value::String.
                                 let result_str = res.to_string(&context);
-                                Ok(HttpResponse::Ok().body(result_str.value()))
+                                let response_val = global.get(&context, &v8::value::String::from_str(&isolate, "response"));
+                                let response_obj = Response::from_js(&isolate, &context, &response_val.into_object().unwrap());
+
+                                let mut resp = HttpResponse::build(StatusCode::from_u16(response_obj.status as u16).unwrap());
+                                for val in response_obj.headers {
+                                    resp.header(val.key.as_str(), val.value.as_str());
+                                }
+
+                                Ok(resp.body(result_str.value()))
                             },
                             Err(e) => {
                                 println!("ERR! {:?}", e);
