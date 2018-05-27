@@ -40,29 +40,25 @@ struct CreateRequest {
     javascript: String,
 }
 
-fn create_lambda(name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
-    req.clone().json()
+fn create_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
+    let request = Request::map(&name, &req); 
+    req.clone()
+        .state()
+        .db
+        .send(CreateLambda {
+            path: request.path,
+            hostname: request.host,
+            code: body,
+        })
         .from_err()
-        .and_then(move |val: CreateRequest| {
-            let request = Request::map(&name, &req); 
-            req.clone()
-                .state()
-                .db
-                .send(CreateLambda {
-                    path: request.path,
-                    hostname: request.host,
-                    code: val.javascript,
-                })
-                .from_err()
-                .and_then(move |res| match res {
-                    Ok(lambda) => Ok(HttpResponse::Ok().json(lambda)),
-                    Err(_) => Ok(HttpResponse::InternalServerError().into()),
-                })
+        .and_then(move |res| match res {
+            Ok(lambda) => Ok(HttpResponse::Ok().json(lambda)),
+            Err(_) => Ok(HttpResponse::InternalServerError().into()),
         })
         .responder()
 }
 
-fn exec_lambda(name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
+fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
     req.clone()
         .state()
         .db
@@ -102,6 +98,12 @@ fn exec_lambda(name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> F
                         // request helper functions
                         let get_header = v8::value::Function::new(&isolate, &context, 1, Box::new(functions::get_header));
                         js_request.set(&context, &v8::value::String::from_str(&isolate, "getHeader"), &get_header);
+                        let parse_json = v8::value::Function::new(&isolate, &context, 0, Box::new(functions::parse_json));
+                        js_request.set(&context, &v8::value::String::from_str(&isolate, "json"), &parse_json);
+
+                        // FIXME: should be a part of Request::map
+                        js_request.set(&context, &v8::value::String::from_str(&isolate, "body"), 
+                            &v8::value::String::from_str(&isolate, body.as_str()));
 
                         // endpoint    
                         let value = global.get(&context, &v8::value::String::from_str(&isolate, "handler"));
@@ -166,8 +168,8 @@ fn main() {
     server::new(move
         || App::with_state(AppState{db: addr.clone()})
             .middleware(Logger::default())
-            .resource("/v1/lambda/{path}", |r| r.method(http::Method::POST).with2(create_lambda))
-            .resource("/{path}", |r| r.route().with2(exec_lambda)))
+            .resource("/v1/lambda/{path}", |r| r.method(http::Method::POST).with3(create_lambda))
+            .resource("/{path}", |r| r.route().with3(exec_lambda)))
         .bind(listen_addr)
         .unwrap()
         .start();

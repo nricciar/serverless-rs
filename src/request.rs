@@ -33,7 +33,6 @@ impl Request {
                            proto: "http".to_string(),
                            method: req.method().as_str().to_string(),
                            headers: headers,
-                           // FIXME: body
                            body: Some("".to_string()) };
         req
     }

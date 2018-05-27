@@ -9,8 +9,8 @@ Proof of concept "javascript as a service" written in rust using the [v8-rs](htt
 
 ```
 curl -X POST http://localhost:8088/v1/lambda/hello \
-	-H"Content-Type: application/json" \
-	-d '{"javascript":"function handler(request) { response.status = 418; response.addHeader(\"X-Hello-World\", \"true\"); return \"Hello \" + request.host + \"!\"; };"}'
+	-H"Content-Type: application/javascript" \
+	-d 'function handler(request) { response.status = 418; response.addHeader("X-Hello-World", "true"); return "Hello " + request.getHeader("Host") + "!"; };'
 
 >>>
 
