@@ -1,6 +1,10 @@
 extern crate v8;
+extern crate reqwest;
+
+use std::str;
 
 use response;
+use request;
 
 pub fn hello(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Value, v8::value::Value> {
     let test = v8::value::String::from_str(&info.isolate, "World!");
@@ -27,6 +31,73 @@ pub fn parse_json(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Va
         _ => {
             let err = v8::value::String::from_str(&info.isolate, "Invalid json");
             Err(v8::value::Value::from(err))
+        }
+    }
+}
+
+fn construct_headers(headers: &Vec<response::Header>) -> reqwest::header::Headers {
+    let mut resp = reqwest::header::Headers::new();
+    for h in headers.iter() {
+        resp.set_raw(h.key.as_str().to_string(), h.value.as_str().to_string());
+    }
+    resp
+}
+
+pub fn make_request(info: v8::value::FunctionCallbackInfo) -> Result<v8::value::Value, v8::value::Value> {
+    match info.args.as_slice() {
+        [key] => {
+            match key.clone().into_object() {
+                Some(k) => {
+                    let context = v8::Context::new(&info.isolate);
+                    let request = request::Request::from_js(&info.isolate, &context, &k).unwrap();
+
+                    let client = reqwest::Client::new();
+                    let uri = request.uri();
+                    let req =
+                        match (request.method.as_str(), request.body) {
+                            ("GET", _) => Some(client.get(uri.as_str()).headers(construct_headers(&request.headers)).send()), 
+                            ("POST", Some(b)) => Some(client.post(uri.as_str()).body(b).headers(construct_headers(&request.headers)).send()),
+                            ("DELETE", None) => Some(client.delete(uri.as_str()).headers(construct_headers(&request.headers)).send()),
+                            ("PATCH", Some(b)) => Some(client.patch(uri.as_str()).body(b).headers(construct_headers(&request.headers)).send()),
+                            ("PUT", Some(b)) => Some(client.put(uri.as_str()).body(b).headers(construct_headers(&request.headers)).send()),
+                            _ => None
+                        };
+                    match req {
+                        Some(r) => {
+                            // response
+                            let mut ret = r.unwrap();
+
+                            // response body
+                            let mut buf: Vec<u8> = vec![];
+                            ret.copy_to(&mut buf).unwrap();
+                            let body = str::from_utf8(&buf).unwrap();
+
+                            // response
+                            let status = ret.status().as_u16();
+                            let response = response::Response { status: status as i32, headers: Vec::new(), body: body.to_string() };
+                            let response_js = response.js(&info.isolate, &context);
+
+                            // add .json() helper to response object
+                            let parse_json = v8::value::Function::new(&info.isolate, &context, 0, Box::new(parse_json));
+                            response_js.set(&context, &v8::value::String::from_str(&info.isolate, "json"), &parse_json);
+
+                            Ok(v8::value::Value::from(response_js))
+                        },
+                        None => {
+                            let err = v8::value::String::from_str(&info.isolate, "Invalid Request Method!");
+                            Err(v8::value::Value::from(err)) 
+                        }
+                    }
+                },
+                None => {
+                    let err = v8::value::String::from_str(&info.isolate, "Invalid Request!");
+                    Err(v8::value::Value::from(err)) 
+                }
+            }
+        },
+        _ => {
+            let err = v8::value::String::from_str(&info.isolate, "Invalid Request!");
+            Err(v8::value::Value::from(err)) 
         }
     }
 }

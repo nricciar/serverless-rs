@@ -11,6 +11,7 @@ pub struct Header {
 pub struct Response {
     pub status: i32,
     pub headers: Vec<Header>,
+    pub body: String,
 }
 
 fn count_headers(context: &v8::context::Context, isolate: &v8::isolate::Isolate, arr: &v8::value::Array) -> i32 {
@@ -49,7 +50,7 @@ pub fn find_header_by_key(context: &v8::context::Context, isolate: &v8::isolate:
     result
 }
 
-fn get_header_list(context: &v8::context::Context, isolate: &v8::isolate::Isolate, arr: &v8::value::Array) -> Vec<Header> {
+pub fn get_header_list(context: &v8::context::Context, isolate: &v8::isolate::Isolate, arr: &v8::value::Array) -> Vec<Header> {
     let mut vec = Vec::new();
     let mut count = 0;
     while {
@@ -94,7 +95,7 @@ fn js_array_to_header(context: &v8::context::Context, isolate: &v8::isolate::Iso
 
 impl Response {
     pub fn new() -> Response {
-        Response { status: 200, headers: Vec::new() }
+        Response { status: 200, headers: Vec::new(), body: "".to_string() }
     }
 
     pub fn js(&self, isolate: &v8::isolate::Isolate, context: &v8::context::Context) -> v8::value::Object {
@@ -103,15 +104,20 @@ impl Response {
             &v8::value::Integer::new(&isolate, self.status));
         let headers = v8::value::Array::new(&isolate, &context, 0);
         response.set(&context, &v8::value::String::from_str(&isolate, "headers"), &headers);
+        response.set(&context, &v8::value::String::from_str(&isolate, "body"), 
+            &v8::value::String::from_str(&isolate, self.body.as_str()));
         response
     }
 
     pub fn from_js(isolate: &v8::isolate::Isolate, context: &v8::context::Context, obj: &v8::value::Object) -> Response {
         let status = obj.get(&context, &v8::value::String::from_str(&isolate, "status"));
         let headers = obj.get(&context, &v8::value::String::from_str(&isolate, "headers")).into_array().unwrap();
+        let body = obj.get(&context, &v8::value::String::from_str(&isolate, "body")).into_string().unwrap().value();
+
 
         Response { status: status.into_int32().unwrap().value(),
-                   headers: get_header_list(&context, &isolate, &headers) }
+                   headers: get_header_list(&context, &isolate, &headers),
+                   body: body }
     }
 }
 

@@ -20,7 +20,6 @@ use actix_web::middleware::Logger;
 use diesel::pg::PgConnection;
 use diesel::r2d2::ConnectionManager;
 use futures::Future;
-use actix_web::HttpMessage;
 
 mod db;
 mod models;
@@ -88,6 +87,10 @@ fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<A
                         // helper functions
                         let test = v8::value::Function::new(&isolate, &context, 0, Box::new(functions::hello));
                         global.set(&context, &v8::value::String::from_str(&isolate, "hello"), &test);
+                        let http = v8::value::Object::new(&isolate, &context);
+                        let http_request = v8::value::Function::new(&isolate, &context, 1, Box::new(functions::make_request));
+                        http.set(&context, &v8::value::String::from_str(&isolate, "request"), &http_request);
+                        global.set(&context, &v8::value::String::from_str(&isolate, "http"), &http);
 
                         // response helper functions
                         let add_header = v8::value::Function::new(&isolate, &context, 2, Box::new(functions::add_header));
