@@ -1,4 +1,3 @@
-// Hello World
 extern crate serde;
 extern crate serde_json;
 #[macro_use]
@@ -11,6 +10,7 @@ extern crate env_logger;
 extern crate futures;
 extern crate r2d2;
 extern crate v8;
+extern crate reqwest;
 
 use actix::prelude::{SyncArbiter};
 use actix_web::{http, server, Path, App, AsyncResponder, FutureResponse,
@@ -20,33 +20,31 @@ use actix_web::middleware::Logger;
 use diesel::pg::PgConnection;
 use diesel::r2d2::ConnectionManager;
 use futures::Future;
+use std::env;
+use traits::{ToString};
 
-mod db;
 mod models;
+mod db;
 mod schema;
-mod functions;
+mod headers;
 mod request;
 mod response;
+mod traits;
+mod functions;
 
-use db::{GetLambda, CreateLambda, DbExecutor, AppState};
 use request::{Request};
+use headers::{Header};
 use response::{Response};
-
-use std::env;
-
-#[derive(Debug, Deserialize, Serialize)]
-struct CreateRequest {
-    javascript: String,
-}
+use db::{GetLambda, CreateLambda, DbExecutor, AppState};
 
 fn create_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
-    let request = Request::map(&name, &req); 
+    let request = Request::map(&name, &req, None); 
     req.clone()
         .state()
         .db
         .send(CreateLambda {
-            path: request.path,
-            hostname: request.host,
+            path: request.path(),
+            hostname: request.host(),
             code: body,
         })
         .from_err()
@@ -57,12 +55,20 @@ fn create_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest
         .responder()
 }
 
+fn make_response<T: ToString>(status: u16, headers: &Vec<Header>, body: T) -> HttpResponse {
+    let mut resp = HttpResponse::build(StatusCode::from_u16(status).unwrap());
+    for h in headers.iter() {
+        resp.header(h.name().as_str(), h.value().as_str());
+    }
+    resp.body(body.get_string())
+}
+
 fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<AppState>) -> FutureResponse<HttpResponse> {
     req.clone()
         .state()
         .db
         .send(GetLambda {
-            request: Request::map(&name, &req),
+            request: Request::map(&name, &req, None),
         })
         .from_err()
         .and_then(move |res| match res {
@@ -70,8 +76,9 @@ fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<A
                 let isolate = v8::Isolate::new();
                 let context = v8::Context::new(&isolate);
 
-                // request object passed to handler
-                let js_request = Request::map(&name, &req).js(&isolate, &context);
+                let request = Request::map(&name, &req, Some(body));
+
+                let js_request = request.js(&isolate, &context);
                 // initial response object
                 let js_response = Response::new().js(&isolate, &context);
 
@@ -85,28 +92,13 @@ fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<A
                     Ok(_) => {
                         let global = context.global();
                         // helper functions
-                        let test = v8::value::Function::new(&isolate, &context, 0, Box::new(functions::hello));
-                        global.set(&context, &v8::value::String::from_str(&isolate, "hello"), &test);
                         let http = v8::value::Object::new(&isolate, &context);
                         let http_request = v8::value::Function::new(&isolate, &context, 1, Box::new(functions::make_request));
                         http.set(&context, &v8::value::String::from_str(&isolate, "request"), &http_request);
                         global.set(&context, &v8::value::String::from_str(&isolate, "http"), &http);
 
-                        // response helper functions
-                        let add_header = v8::value::Function::new(&isolate, &context, 2, Box::new(functions::add_header));
-                        js_response.set(&context, &v8::value::String::from_str(&isolate, "addHeader"), &add_header);
                         // set default response values
                         global.set(&context, &v8::value::String::from_str(&isolate, "response"), &js_response);
-
-                        // request helper functions
-                        let get_header = v8::value::Function::new(&isolate, &context, 1, Box::new(functions::get_header));
-                        js_request.set(&context, &v8::value::String::from_str(&isolate, "getHeader"), &get_header);
-                        let parse_json = v8::value::Function::new(&isolate, &context, 0, Box::new(functions::parse_json));
-                        js_request.set(&context, &v8::value::String::from_str(&isolate, "json"), &parse_json);
-
-                        // FIXME: should be a part of Request::map
-                        js_request.set(&context, &v8::value::String::from_str(&isolate, "body"), 
-                            &v8::value::String::from_str(&isolate, body.as_str()));
 
                         // endpoint    
                         let value = global.get(&context, &v8::value::String::from_str(&isolate, "handler"));
@@ -120,8 +112,11 @@ fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<A
 
                                 let mut resp = HttpResponse::build(StatusCode::from_u16(response_obj.status as u16).unwrap());
                                 for val in response_obj.headers {
-                                    resp.header(val.key.as_str(), val.value.as_str());
+                                    resp.header(val.name().as_str(), val.value().as_str());
                                 }
+
+                                // doc says to run this "frequently" ??
+                                isolate.run_enqueued_tasks();
 
                                 Ok(resp.body(result_str.value()))
                             },
@@ -131,16 +126,14 @@ fn exec_lambda(body: String, name: Path<request::LambdaPath>, req: HttpRequest<A
                             },
                         }
                     },
-                    Err(e) => {
-                        println!("ERR! {:?}", e);
+                    Err(_) => {
                         Ok(HttpResponse::InternalServerError().body("Internal Error"))
-                    },
+                    }
                 }
             },
-            Err(e) => {
-                println!("ERR! {:?}", e);
-                Ok(HttpResponse::from_error(e))
-            },
+            Err(_) => {
+                Ok(make_response(404, &Vec::new(), "Not Found"))
+            }
         })
         .responder()
 }

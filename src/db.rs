@@ -73,8 +73,8 @@ impl Handler<GetLambda> for DbExecutor {
         let conn: &PgConnection = &self.0.get().unwrap();
 
         let mut items = lambdas
-            .filter(path.eq(msg.request.path))
-            .filter(hostname.eq(msg.request.host))
+            .filter(path.eq(msg.request.path()))
+            .filter(hostname.eq(msg.request.host()))
             .load::<models::Lambda>(conn)
             .map_err(|_| error::ErrorInternalServerError("Error loading lambda"))?;
 
